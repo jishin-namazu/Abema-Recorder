@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "abema_recorder"
+version = "1.0.0"
+description = "Container-first ABEMA HLS proxy and live recorder"
+requires-python = ">=3.11"
+dependencies = ["streamlink==8.5.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+abema-recorder = "abema_recorder:main"
+
+[tool.setuptools.packages.find]
+include = ["abema_recorder*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"

@@ -1,0 +1,25 @@
+services:
+  recorder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: abema-recorder:latest
+    command: ["capture"]
+
+    environment:
+      ABEMA_URL: ${ABEMA_URL:-https://abema.tv/now-on-air/luckyfes}
+      ABEMA_QUALITY: ${ABEMA_QUALITY:-1080p}
+      ABEMA_PROXY_HOST: 0.0.0.0
+      ABEMA_PROXY_PORT: ${ABEMA_PROXY_PORT:-18081}
+
+    ports:
+      # OBS/VLC/PotPlayer on the host can open this HLS playlist.
+      - "127.0.0.1:${ABEMA_PROXY_PORT:-18081}:${ABEMA_PROXY_PORT:-18081}"
+
+    volumes:
+      - ./archive:/archive
+
+    # Let Ctrl+C reach N_m3u8DL-RE so the live muxer can close its output.
+    init: true
+    stdin_open: true
+    tty: true
