@@ -60,3 +60,36 @@ def test_subcommands_accept_settings() -> None:
     parser = build_parser()
     for argv in (["probe", "--settings", "x.env"], ["rebuild", "--settings", "x.env", "t"], ["backfill", "--settings", "x.env", "t"]):
         parser.parse_args(argv)  # must not exit with "unrecognized arguments"
+
+
+def test_watcher_ignores_notes_after_stop(tmp_path) -> None:
+    from abema_recorder import shards
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    watcher = shards.ShardWatcher(tmp_path / "session", log_dir=log_dir)
+    watcher.stop()
+    watcher.note(tmp_path / "0000_dec.m4s", "video")
+    assert not (log_dir / "shards-video.log").exists()
+
+
+def test_decryptor_stop_respects_drain_timeout(tmp_path, monkeypatch) -> None:
+    import subprocess
+    import time
+
+    from abema_recorder import rtdecrypt
+    from abema_recorder.keys import ContentKey, KeyRing
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: time.sleep(30))
+    track = tmp_path / "t"
+    track.mkdir()
+    (track / "_init.mp4").write_bytes(b"I")
+    (track / "0000.m4s").write_bytes(b"S")
+    worker = rtdecrypt.ShardDecryptor(
+        tmp_path / "shaka", KeyRing([ContentKey("0" * 32, "1" * 32)]), workers=1
+    )
+    worker.start(lambda path, kind: None)
+    worker.submit(track / "_init.mp4", track / "0000.m4s", tmp_path / "out_dec.m4s", "video")
+    started = time.monotonic()
+    worker.stop(drain_timeout=0.2)
+    assert time.monotonic() - started < 5

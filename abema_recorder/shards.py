@@ -360,9 +360,12 @@ class ShardWatcher:
         self._thread: threading.Thread | None = None
         self._failures = 0
         self._record_lock = threading.Lock()
+        self._closed = False
 
     def note(self, path: Path, kind: str) -> None:
         """Record a shard produced outside the sweep — the decryptor's callback."""
+        if self._closed:
+            return
         self._record(path, kind)
 
     # -- lifecycle -------------------------------------------------------
@@ -385,6 +388,7 @@ class ShardWatcher:
             except OSError:
                 pass
         self._logs.clear()
+        self._closed = True
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -514,7 +518,7 @@ class ShardWatcher:
     # -- output ----------------------------------------------------------
 
     def _write_log(self, kind: str, line: str) -> None:
-        if self.log_dir is None:
+        if self.log_dir is None or self._closed:
             return
         handle = self._logs.get(kind)
         if handle is None:

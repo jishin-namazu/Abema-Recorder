@@ -103,6 +103,6 @@ def test_forced_hls_keeps_media_url() -> None:
 
 def test_engine_value_normalized_and_validated() -> None:
     url = "https://abema.tv/now-on-air/abema-news"
-    assert runbook.route_for(Settings(url=url, engine="HLS")).engine == source.HLS
+    assert runbook.route_for(Settings(url="https://example.com/x.mpd", engine="HLS")).engine == source.HLS
     with pytest.raises(Exception):
         runbook.route_for(Settings(url=url, engine="bogus"))
