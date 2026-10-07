@@ -209,12 +209,14 @@ def build_parser() -> argparse.ArgumentParser:
         _add_stream_options(sub)
 
     rebuild = subcommands.add_parser("rebuild", help="rebuild a playable file from kept shards")
+    _add_settings_option(rebuild)
     rebuild.add_argument("target", help="a run output directory, or a shard directory")
     rebuild.add_argument("-o", "--output", help="destination file (default: <shards>-rebuilt.mkv)")
 
     backfill = subcommands.add_parser(
         "backfill", help="discover CDN indexes and recover shards missing locally"
     )
+    _add_settings_option(backfill)
     backfill.add_argument("target", help="a run output directory, or its shard directory")
     backfill.add_argument(
         "--rate-limit",
@@ -235,6 +237,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     probe = subcommands.add_parser("probe", help="exercise the toolchain, the CDM and a configured source")
+    _add_settings_option(probe)
     probe.add_argument("--cdm", default=cfg.env(cfg.ENV_CDM) or str(cfg.DEFAULT_CDM))
     probe.add_argument("--decryptor", type=Decryptor, choices=list(Decryptor), default=Decryptor.SHAKA)
     probe.add_argument(

@@ -24,7 +24,10 @@ def resolve(source_url: str, quality: str, media_url: str | None = None) -> Reso
     if media_url:
         # A bare .m3u8 --url is the media playlist itself; no resolution step.
         return ResolvedABEMA(session, media_url, quality, ())
-    streams = session.streams(source_url)
+    try:
+        streams = session.streams(source_url)
+    except Exception as exc:
+        raise SourceError(f"could not resolve {source_url}: {exc}") from exc
     stream = streams.get(quality)
     if stream is None:
         available = ", ".join(sorted(streams))

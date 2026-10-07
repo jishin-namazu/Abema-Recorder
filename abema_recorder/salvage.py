@@ -47,7 +47,7 @@ def locate(target: Path) -> ShardLocation:
     if record is None:
         return ShardLocation(target, None, stale=False, decrypting=None, segment_ms=0)
 
-    if record.get("engine") == "hls":
+    if records.record_engine(record) == "hls":
         # An HLS run keeps .ts segments, not decryptable shards.
         return ShardLocation(target, record, stale=False, decrypting=None, segment_ms=0)
 
@@ -245,7 +245,7 @@ def rebuild(
         )
 
     location = locate(target)
-    if location.record and location.record.get("engine") == "hls":
+    if location.record and records.record_engine(location.record) == "hls":
         raise SalvageError(
             f"{target} was recorded by the HLS engine; the playable file is the .ts in the output directory",
             remedy="rebuild applies to DASH runs, which keep decrypted shards.",

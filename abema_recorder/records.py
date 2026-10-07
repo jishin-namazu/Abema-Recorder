@@ -96,6 +96,18 @@ def read_record(output_dir: Path) -> dict | None:
     return document if isinstance(document, dict) else None
 
 
+def record_engine(document: dict) -> str:
+    """The engine that wrote a run record; legacy records carry no field."""
+    engine = str(document.get("engine") or "").strip().lower()
+    if engine:
+        return engine
+    # The standalone HLS recorder's run.json has proxy/media URLs and no shard
+    # fields; records from before the engine field existed are DASH.
+    if any(key in document for key in ("media_url", "proxy_url", "source_proxy_url")):
+        return "hls"
+    return "dash"
+
+
 class Artefacts:
     """Small text files written beside a run, for diagnosis afterwards."""
 

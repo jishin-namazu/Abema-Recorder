@@ -282,7 +282,7 @@ def _output_dir(target: Path, location: salvage.ShardLocation) -> Path:
 
 def _plans(target: Path) -> tuple[salvage.ShardLocation, Path, tuple[TrackPlan, ...]]:
     location = salvage.locate(target)
-    if location.record and location.record.get("engine") == "hls":
+    if location.record and records.record_engine(location.record) == "hls":
         raise BackfillError(
             f"{target} was recorded by the HLS engine",
             remedy="backfill recovers CDN shards of DASH runs.",

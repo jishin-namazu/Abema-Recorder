@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 from .keys import KeyRing
@@ -60,12 +61,16 @@ class ShardDecryptor:
     def submit(self, init: Path, shard: Path, destination: Path, kind: str) -> None:
         self._jobs.put((init, shard, destination, kind))
 
-    def stop(self) -> None:
-        """Drain every queued job, then join the workers."""
+    def stop(self, drain_timeout: float = 300.0) -> None:
+        """Drain queued jobs, then join the workers, all within drain_timeout."""
+        deadline = time.monotonic() + drain_timeout
         for _ in self._threads:
-            self._jobs.put(None)
+            try:
+                self._jobs.put(None, timeout=max(0.0, deadline - time.monotonic()))
+            except queue.Full:
+                break
         for thread in self._threads:
-            thread.join()
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
         self._threads.clear()
 
     # -- workers -----------------------------------------------------------

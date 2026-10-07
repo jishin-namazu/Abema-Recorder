@@ -10,12 +10,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import console, records
-from ..errors import ToolError
+from ..errors import CaptureError, ToolError
 from .proxy import HLSProxy
 from .timeline import TimelineMerger
 
 
 PIPE_OPTIONS_ENV = "RE_LIVE_PIPE_OPTIONS"
+LOG_NAME = "downloader.log"
 
 
 def executable(name: str) -> Path | None:
@@ -181,7 +182,7 @@ def run(
         )
         process = subprocess.Popen(plan.argv(), env=plan.environment())
         try:
-            return merger.follow(plan.segment_dir, process)
+            status = merger.follow(plan.segment_dir, process)
         except KeyboardInterrupt:
             if process.poll() is None:
                 process.send_signal(signal.SIGINT)
@@ -189,8 +190,25 @@ def run(
                     process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     process.terminate()
+                    _reap(process)
             return 130
         except Exception:
             if process.poll() is None:
                 process.terminate()
+                _reap(process)
             raise
+        if status == -signal.SIGINT:
+            return 130
+        if status not in (0, 130):
+            raise CaptureError(
+                f"the downloader exited with status {status}",
+                remedy=f"See {plan.output_dir / LOG_NAME} for what it reported.",
+            )
+        return status
+
+
+def _reap(process: subprocess.Popen, timeout: float = 5.0) -> None:
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        pass

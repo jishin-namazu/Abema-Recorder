@@ -76,8 +76,15 @@ def route_for(settings: Settings) -> routing.Route:
             "no stream URL was given",
             remedy="Pass --url, or set url= in the settings file.",
         )
-    if settings.engine in (routing.DASH, routing.HLS):
-        return routing.Route(settings.engine)
+    engine = settings.engine.strip().lower()
+    if engine in (routing.DASH, routing.HLS):
+        media_url = routing.classify(settings.url).media_url if engine == routing.HLS else None
+        return routing.Route(engine, media_url=media_url)
+    if engine and engine != routing.AUTO:
+        raise ConfigError(
+            f"unknown engine {settings.engine!r}",
+            remedy="Use auto, dash or hls.",
+        )
     route = routing.classify(settings.url)
     if route.engine == routing.AUTO:
         from .live import resolver
@@ -288,6 +295,8 @@ def _execute_hls(settings: Settings, route: routing.Route, *, dry_run: bool) -> 
     endpoint = hls.Endpoint.parse(settings.hls_address or cfg.DEFAULT_HLS_ADDRESS)
     quality = settings.quality or resolver.DEFAULT_QUALITY
     out_dir = settings.out_dir or default_out_dir()
+    if not settings.paced_output:
+        console.detail("--burst-output has no effect on the HLS engine; playback stays paced")
     return live_capture.run(
         settings.url,
         quality,
@@ -523,7 +532,7 @@ def probe_environment(settings: Settings) -> int:
         console.fail("streamlink: not installed — HLS sources will not resolve")
         ok = False
 
-    if settings.url and routing.classify(settings.url).engine != routing.DASH:
+    if settings.url and route_for(settings).engine != routing.DASH:
         ok = _probe_hls(settings, tools.prober) and ok
 
     if ok:

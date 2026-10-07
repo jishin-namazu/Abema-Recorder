@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 from . import playlists, resolver
+from ..errors import ConfigError
 from .timeline import PlaybackBuffer
 
 
@@ -227,13 +228,16 @@ def make_handler(state: ProxyState):
                     try:
                         sequence = int(self.path.rsplit("/", 1)[1].removesuffix(".ts"))
                         path = state.playback.path(sequence)
-                    except (KeyError, ValueError):
+                        body = path.read_bytes()
+                    except (KeyError, ValueError, OSError):
+                        # KeyError/ValueError: unknown sequence. OSError: the
+                        # buffer expired the segment between lookup and read.
                         self.send_error(404)
                         return
                     self.payload(
                         200,
                         "video/mp2t",
-                        path.read_bytes(),
+                        body,
                         {"Cache-Control": "public, max-age=120"},
                         head,
                     )
@@ -288,7 +292,13 @@ class HLSProxy:
             media_url=media_url,
             normalized_playback=normalized_playback,
         )
-        self.server = ThreadingHTTPServer((host, port), make_handler(self.state))
+        try:
+            self.server = ThreadingHTTPServer((host, port), make_handler(self.state))
+        except OSError as exc:
+            raise ConfigError(
+                f"cannot listen on {host}:{port}: {exc}",
+                remedy="The port is taken — pick another with --hls HOST:PORT.",
+            ) from exc
         self.thread: threading.Thread | None = None
 
     @property
