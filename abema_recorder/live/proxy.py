@@ -10,7 +10,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
-from . import abema, hls
+from . import playlists, resolver
+from ..errors import ConfigError
 from .timeline import PlaybackBuffer
 
 
@@ -36,15 +37,17 @@ class ProxyState:
         port: int,
         public_host: str = "127.0.0.1",
         *,
+        media_url: str | None = None,
         normalized_playback: bool = False,
     ):
         self.source_url = source_url
         self.quality = quality
         self.port = port
         self.public_host = public_host
+        self.media_url_override = media_url
         self.normalized_playback = normalized_playback
         self.playback = PlaybackBuffer()
-        self.resolved: abema.ResolvedABEMA | None = None
+        self.resolved: resolver.ResolvedABEMA | None = None
         self.resolve_lock = threading.RLock()
         self.key_lock = threading.Lock()
         self.key_cache: dict[str, bytes] = {}
@@ -72,7 +75,7 @@ class ProxyState:
 
     def resolve(self) -> None:
         with self.resolve_lock:
-            self.resolved = abema.resolve(self.source_url, self.quality)
+            self.resolved = resolver.resolve(self.source_url, self.quality, media_url=self.media_url_override)
             self.key_cache.clear()
             LOG.info("resolved %s -> %s", self.quality, self.resolved.media_url)
 
@@ -88,7 +91,7 @@ class ProxyState:
             try:
                 response = self._request(self.media_url)
                 response.raise_for_status()
-                rewritten = hls.rewrite_playlist(
+                rewritten = playlists.rewrite_playlist(
                     response.text,
                     self.media_url,
                     self.local_base,
@@ -105,7 +108,7 @@ class ProxyState:
         assert error is not None
         raise error
 
-    def _observe(self, segments: tuple[hls.Segment, ...]) -> None:
+    def _observe(self, segments: tuple[playlists.Segment, ...]) -> None:
         for segment in segments:
             if segment.sequence in self.seen_segments:
                 continue
@@ -225,13 +228,16 @@ def make_handler(state: ProxyState):
                     try:
                         sequence = int(self.path.rsplit("/", 1)[1].removesuffix(".ts"))
                         path = state.playback.path(sequence)
-                    except (KeyError, ValueError):
+                        body = path.read_bytes()
+                    except (KeyError, ValueError, OSError):
+                        # KeyError/ValueError: unknown sequence. OSError: the
+                        # buffer expired the segment between lookup and read.
                         self.send_error(404)
                         return
                     self.payload(
                         200,
                         "video/mp2t",
-                        path.read_bytes(),
+                        body,
                         {"Cache-Control": "public, max-age=120"},
                         head,
                     )
@@ -250,7 +256,7 @@ def make_handler(state: ProxyState):
                     return
                 if self.path.startswith("/resource/"):
                     token = self.path.split("/resource/", 1)[1].split("/", 1)[0]
-                    remote = hls.decode_url(token)
+                    remote = playlists.decode_url(token)
                     status, headers, body = state.fetch_resource(remote, dict(self.headers.items()))
                     self.payload(status, headers["Content-Type"], body, headers, head)
                     return
@@ -276,10 +282,23 @@ class HLSProxy:
         host: str,
         port: int,
         *,
+        media_url: str | None = None,
         normalized_playback: bool = False,
     ):
-        self.state = ProxyState(source_url, quality, port, normalized_playback=normalized_playback)
-        self.server = ThreadingHTTPServer((host, port), make_handler(self.state))
+        self.state = ProxyState(
+            source_url,
+            quality,
+            port,
+            media_url=media_url,
+            normalized_playback=normalized_playback,
+        )
+        try:
+            self.server = ThreadingHTTPServer((host, port), make_handler(self.state))
+        except OSError as exc:
+            raise ConfigError(
+                f"cannot listen on {host}:{port}: {exc}",
+                remedy="The port is taken — pick another with --hls HOST:PORT.",
+            ) from exc
         self.thread: threading.Thread | None = None
 
     @property

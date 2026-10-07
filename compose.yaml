@@ -1,25 +1,41 @@
+# 开始录制：
+#   docker compose up
+#
+# 其他子命令直接跟在服务名后面：
+#   docker compose run --rm recorder probe
+#   docker compose run --rm recorder keys
+#   docker compose run --rm recorder rebuild /archive/run_<stamp>.out
+#
+# 本地 m3u8 服务映射在宿主机回环地址的 8080 端口：
+#   DASH 直播录制中播放 http://127.0.0.1:8080/live.m3u8
+#   HLS 引擎（频道页或 m3u8 地址）播放 http://127.0.0.1:8080/index.m3u8
+
 services:
   recorder:
     build:
       context: .
       dockerfile: Dockerfile
     image: abema-recorder:latest
+
     command: ["capture"]
 
-    environment:
-      ABEMA_URL: ${ABEMA_URL:-https://abema.tv/now-on-air/luckyfes}
-      ABEMA_QUALITY: ${ABEMA_QUALITY:-1080p}
-      ABEMA_PROXY_HOST: 0.0.0.0
-      ABEMA_PROXY_PORT: ${ABEMA_PROXY_PORT:-18081}
-
+    # 本地 m3u8 服务（DASH 直播默认开启；HLS 引擎始终提供）。
     ports:
-      # OBS/VLC/PotPlayer on the host can open this HLS playlist.
-      - "127.0.0.1:${ABEMA_PROXY_PORT:-18081}:${ABEMA_PROXY_PORT:-18081}"
+      - "127.0.0.1:8080:8080"
+
+    environment:
+      ABM_URL: ${ABM_URL:-}
+      ABM_TOKEN: ${ABM_TOKEN:-}
+      ABM_QUALITY: ${ABM_QUALITY:-}
+      ABM_HLS: 0.0.0.0:8080
 
     volumes:
       - ./archive:/archive
+      - ./.env:/config/.env:ro
+      # 没有设备文件时注释掉这一行，否则 Docker 会在源位置创建目录。
+      - ./device.wvd:/config/device.wvd:ro
 
-    # Let Ctrl+C reach N_m3u8DL-RE so the live muxer can close its output.
+    # Ctrl+C 必须能到达下载器，否则混流文件尾部损坏。
     init: true
     stdin_open: true
     tty: true
