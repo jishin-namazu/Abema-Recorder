@@ -1,12 +1,20 @@
-# Credentials must never enter the build context, let alone a layer.
+# Credentials and key material must never enter the build context.
 .abema
+.abema.*
 .env
+.env.*
+!.env.example
 device.wvd
 *.wvd
 headers.txt
+keys.txt
+license.txt
+pssh.txt
 
 archive/
 recordings/
+run_*/
+run_*.out/
 
 .git/
 .gitignore

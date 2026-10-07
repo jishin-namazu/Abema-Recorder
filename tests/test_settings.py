@@ -70,3 +70,20 @@ def test_legacy_environment_fallback(monkeypatch) -> None:
     assert cfg.env(cfg.ENV_URL) == "https://abema.tv/now-on-air/x"
     monkeypatch.setenv(cfg.ENV_URL, "https://example.com/a.mpd")
     assert cfg.env(cfg.ENV_URL) == "https://example.com/a.mpd"
+
+
+def test_empty_env_value_does_not_veto_settings_file(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "test.env"
+    target.write_text("url=https://example.com/a.mpd\n", encoding="utf-8")
+    monkeypatch.setenv("ABM_URL", "")
+    path, applied = cfg.load_settings_file(target)
+    assert applied[cfg.ENV_URL] == "https://example.com/a.mpd"
+    assert cfg.env(cfg.ENV_URL) == "https://example.com/a.mpd"
+
+
+def test_real_env_value_still_wins_over_settings_file(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "test.env"
+    target.write_text("url=https://example.com/a.mpd\n", encoding="utf-8")
+    monkeypatch.setenv("ABM_URL", "https://env.example/x.mpd")
+    cfg.load_settings_file(target)
+    assert cfg.env(cfg.ENV_URL) == "https://env.example/x.mpd"

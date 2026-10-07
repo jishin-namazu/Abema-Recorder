@@ -137,7 +137,7 @@ def load_settings_file(explicit: Path | None = None) -> tuple[Path | None, dict[
         return None, {}
     applied: dict[str, str] = {}
     for name, value in values.items():
-        if name in os.environ:
+        if os.environ.get(name, "").strip():
             continue
         os.environ[name] = value
         applied[name] = value

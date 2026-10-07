@@ -146,8 +146,8 @@ docker compose up
 | `--guard-interval S` | 密钥轮换复查间隔，默认 240 秒（仅 DASH） |
 | `--settings FILE` | 配置文件路径。未指定时：设了 `$ABM_SETTINGS` 就只用它，否则找 `./.env` 或 `./.abema` |
 
-`backfill` / `rebuild` 不接受 `--settings`，要指定配置文件请写在子命令之前
-（`abema-recorder --settings FILE backfill ...`）或用 `$ABM_SETTINGS`。
+`backfill` / `rebuild` / `probe` 也接受 `--settings`，只是配置文件总会被加载；
+写在其后时由 argparse 接受并忽略，写在前时同样生效（`abema-recorder --settings FILE backfill ...`）。
 
 退出码：`0` 成功，`1` 环境/工具链检查未通过，`2` 运行时错误，`130` 用户中断。
 
@@ -194,8 +194,8 @@ docker compose run --rm recorder backfill /archive/run_20260823_091907.out --sca
 输出分别列出音视频的 CDN 首尾、检查到的最后索引、本地数量、缺失数量：
 
 ```text
-video: CDN 1..3630; local 3519; missing 111; recovered 0
-audio: CDN 1..3623; local 3511; missing 112; recovered 0
+video: CDN 1..3630; checked through 3630; local 3519; missing 111; recovered 0
+audio: CDN 1..3623; checked through 3623; local 3511; missing 112; recovered 0
 ```
 
 ### 2. 限速补齐
@@ -230,14 +230,14 @@ docker compose up
 # 已有密钥的离线录制，不需要 CDM
 docker compose run --rm recorder capture --url "<mpd>" --key kid:key
 
-# 录制频道直播（HLS 引擎），720p，只录一小时
-docker compose run --rm recorder capture --url "https://abema.tv/now-on-air/abema-special" --quality 720p --record-limit 01:00:00
+# 录制频道直播（HLS 引擎），720p，只录一小时；--service-ports 把播放端口映射到宿主机
+docker compose run --rm --service-ports recorder capture --url "https://abema.tv/now-on-air/abema-special" --quality 720p --record-limit 01:00:00
 
 # 只取密钥并检查覆盖，不录制
 docker compose run --rm recorder keys --url "<mpd>" --token "<license-url>"
 
-# 只运行 HLS 代理，边下边播交给别的播放器
-docker compose run --rm recorder proxy --url "https://abema.tv/now-on-air/abema-special"
+# 只运行 HLS 代理，边下边播交给别的播放器（同样要 --service-ports）
+docker compose run --rm --service-ports recorder proxy --url "https://abema.tv/now-on-air/abema-special"
 
 # 先扫描，不下载
 docker compose run --rm recorder backfill /archive/run_20260823_091907.out --scan-only
@@ -263,6 +263,7 @@ docker compose run --rm recorder rebuild /archive/run_20260803_091917.out
 | `headers` | `ABM_HEADERS` |
 | `hls` / `hls_address` | `ABM_HLS` |
 | `quality` | `ABM_QUALITY` |
+| `engine` | `ABM_ENGINE` |
 | `ABEMA_URL` / `abema_url` | `ABM_URL` |
 | `ABEMA_QUALITY` / `abema_quality` | `ABM_QUALITY` |
 | `ABEMA_PROXY_PORT` / `abema_proxy_port` | `ABM_HLS`（端口映射为 `127.0.0.1:端口`） |

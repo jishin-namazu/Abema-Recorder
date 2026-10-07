@@ -30,7 +30,7 @@ RUN ./shaka-packager --version
 FROM python:3.13-slim
 
 LABEL org.opencontainers.image.title="abema_recorder"
-LABEL org.opencontainers.image.description="Container-first archiver for Widevine-protected DASH streams from ABEMA"
+LABEL org.opencontainers.image.description="Container-first ABEMA recorder for Widevine-protected DASH and plain HLS streams"
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
