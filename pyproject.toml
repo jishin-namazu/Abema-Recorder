@@ -5,11 +5,15 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "abema_recorder"
 version = "1.0.0"
-description = "Container-first ABEMA HLS proxy and live recorder"
+description = "Container-first archiver for Widevine-protected DASH streams from ABEMA"
 requires-python = ">=3.11"
 dependencies = ["streamlink==8.5.0"]
 
 [project.optional-dependencies]
+# Local key derivation. pywidevine pulls protobuf and construct along; a
+# partial install imports cleanly and fails at first real use, and the probe
+# command exercises the import chain.
+cdm = ["pywidevine>=1.9"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]

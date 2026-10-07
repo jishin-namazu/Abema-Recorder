@@ -1,4 +1,4 @@
-from abema_recorder.hls import decode_url, rewrite_playlist
+from abema_recorder.live.playlists import decode_url, rewrite_playlist
 
 
 REMOTE = "https://linear-abematv.akamaized.net/channel/luckyfes/1080/playlist.m3u8"

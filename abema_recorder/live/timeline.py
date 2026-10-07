@@ -93,9 +93,8 @@ class PlaybackBuffer:
                 )
                 return
 
-            # If the reserve was completely exhausted, the next segment must
-            # resume playback immediately.  Reset the cadence so a later burst
-            # refills the queue instead of being drained all at once.
+            # Reserve exhausted: reset the cadence; the next segment resumes
+            # playback immediately.
             if (
                 self._started
                 and pending_was_empty

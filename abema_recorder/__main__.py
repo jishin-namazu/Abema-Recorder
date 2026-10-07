@@ -1,4 +1,8 @@
-from .cli import main
+from __future__ import annotations
 
-raise SystemExit(main())
+import sys
 
+from . import main
+
+if __name__ == "__main__":
+    sys.exit(main())

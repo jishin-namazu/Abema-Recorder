@@ -1,9 +1,24 @@
+# Credentials and key material. These must never be committed — a token or a CDM
+# in history stays there, and rewriting history does not un-publish it.
 .env
 .env.*
 !.env.example
+.abema
+.abema.*
+*.wvd
+keys.txt
+license.txt
+pssh.txt
+headers.txt
 
+# Run output. The recorder writes artefacts and shards as siblings, both named
+# after the run, so matching the run prefix catches the pair wherever the working
+# directory happens to be.
 archive/
-recordings/
+run_*/
+run_*.out/
+
+# Media, in case a recording is moved out of archive/ by hand.
 *.ts
 *.m4s
 *.mkv
@@ -11,12 +26,11 @@ recordings/
 *.m4a
 *.aac
 
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
-pytest-cache-files-*/
-.test-tmp-*/
 .mypy_cache/
 .ruff_cache/
 .venv/
@@ -24,6 +38,7 @@ venv/
 build/
 dist/
 
+# Editors and OS
 .vscode/
 .idea/
 .DS_Store

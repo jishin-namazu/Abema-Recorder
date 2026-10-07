@@ -1,115 +1,120 @@
-"""Pure HLS playlist rewriting.
+"""A small HTTP server for the rolling HLS output produced during a live capture.
 
-ABEMA's media playlist mixes encrypted ``/tslive/`` segments with clear
-``/tsad/`` segments and marks timeline/encoding boundaries using
-``#EXT-X-DISCONTINUITY``.  Playback playlists retain those tags so players can
-reset their decoders and clocks; an optional clean endpoint can hide them.
+Only relevant when the source is a live (``type="dynamic"``) MPD: a static
+timeshift MPD produces no rolling playlist.
 """
 
 from __future__ import annotations
 
-import base64
-import re
-from dataclasses import dataclass
-from pathlib import PurePosixPath
-from urllib.parse import urljoin, urlsplit
+from dataclasses import dataclass, field
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from threading import Thread
+from urllib.parse import urlsplit
 
+from .errors import ConfigError
 
-URI_ATTRIBUTE_RE = re.compile(r'URI="([^"]+)"')
-
-
-@dataclass(frozen=True, slots=True)
-class Segment:
-    sequence: int
-    url: str
-    mode: str
-    discontinuity: bool
+PLAYLIST_NAME = "live.m3u8"
+DEFAULT_PORT = 8080
 
 
 @dataclass(frozen=True, slots=True)
-class RewrittenPlaylist:
-    text: str
-    segments: tuple[Segment, ...]
+class Endpoint:
+    host: str
+    port: int
+
+    @classmethod
+    def parse(cls, value: str) -> "Endpoint":
+        value = value.strip()
+        if value.isdigit():
+            value = f"127.0.0.1:{value}"
+        try:
+            parsed = urlsplit(f"//{value}")
+            port = parsed.port or DEFAULT_PORT
+        except ValueError as exc:
+            raise ConfigError(
+                f"invalid HLS address: {value}",
+                remedy="Use HOST:PORT, for example 127.0.0.1:8080.",
+            ) from exc
+        if (
+            not parsed.hostname
+            or ":" in parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in ("", "/")
+            or parsed.query
+            or parsed.fragment
+            or not 1 <= port <= 65535
+        ):
+            raise ConfigError(
+                f"invalid HLS address: {value}",
+                remedy="Use HOST:PORT, for example 127.0.0.1:8080.",
+            )
+        return cls(parsed.hostname, port)
+
+    @property
+    def public_url(self) -> str:
+        host = "127.0.0.1" if self.host in ("0.0.0.0", "::") else self.host
+        shown = f"[{host}]" if ":" in host else host
+        return f"http://{shown}:{self.port}/{PLAYLIST_NAME}"
 
 
-def encode_url(url: str) -> str:
-    return base64.urlsafe_b64encode(url.encode("utf-8")).rstrip(b"=").decode("ascii")
+class _Handler(SimpleHTTPRequestHandler):
+    extensions_map = {
+        **SimpleHTTPRequestHandler.extensions_map,
+        ".m3u8": "application/vnd.apple.mpegurl",
+        ".ts": "video/mp2t",
+    }
+
+    def end_headers(self) -> None:
+        self.send_header("Access-Control-Allow-Origin", "*")
+        if self.path.partition("?")[0].endswith(".m3u8"):
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        super().end_headers()
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
 
 
-def decode_url(token: str) -> str:
-    token += "=" * (-len(token) % 4)
-    return base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
+class _Server(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
 
 
-def resource_name(url: str) -> str:
-    parts = urlsplit(url)
-    if parts.scheme == "abematv-license":
-        return "key.bin"
-    name = PurePosixPath(parts.path).name or "resource.bin"
-    return re.sub(r"[^A-Za-z0-9._-]", "_", name)
+@dataclass(slots=True)
+class HlsServer:
+    directory: Path
+    endpoint: Endpoint
+    _server: _Server | None = field(default=None, init=False, repr=False)
+    _thread: Thread | None = field(default=None, init=False, repr=False)
 
+    @property
+    def url(self) -> str:
+        return self.endpoint.public_url
 
-def resource_url(local_base: str, remote_url: str) -> str:
-    return f"{local_base.rstrip('/')}/resource/{encode_url(remote_url)}/{resource_name(remote_url)}"
+    def start(self) -> None:
+        if self._server is not None:
+            return
+        self.directory.mkdir(parents=True, exist_ok=True)
+        handler = partial(_Handler, directory=str(self.directory.resolve()))
+        try:
+            server = _Server((self.endpoint.host, self.endpoint.port), handler)
+        except OSError as exc:
+            raise ConfigError(
+                f"could not serve HLS on {self.endpoint.host}:{self.endpoint.port}: {exc}",
+                remedy="Stop the process using that port, or choose another address with --hls.",
+            ) from exc
+        self._server = server
+        self._thread = Thread(target=server.serve_forever, name="hls-server", daemon=True)
+        self._thread.start()
 
-
-def segment_mode(url: str) -> str:
-    if "/tsad/" in url:
-        return "tsad"
-    if "/tslive/" in url:
-        return "tslive"
-    return "other"
-
-
-def rewrite_playlist(
-    text: str,
-    playlist_url: str,
-    local_base: str,
-    *,
-    strip_discontinuity: bool = False,
-) -> RewrittenPlaylist:
-    output: list[str] = []
-    segments: list[Segment] = []
-    sequence = 0
-    pending_discontinuity = False
-
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if line.startswith("#EXT-X-MEDIA-SEQUENCE:"):
-            try:
-                sequence = int(line.split(":", 1)[1])
-            except ValueError:
-                pass
-            output.append(raw_line)
-            continue
-
-        if line == "#EXT-X-DISCONTINUITY":
-            pending_discontinuity = True
-            if not strip_discontinuity:
-                output.append(raw_line)
-            continue
-
-        if line.startswith("#EXT-X-DISCONTINUITY-SEQUENCE:"):
-            if not strip_discontinuity:
-                output.append(raw_line)
-            continue
-
-        if line.startswith("#"):
-            def replace_uri(match: re.Match[str]) -> str:
-                remote = urljoin(playlist_url, match.group(1))
-                return f'URI="{resource_url(local_base, remote)}"'
-
-            output.append(URI_ATTRIBUTE_RE.sub(replace_uri, raw_line))
-            continue
-
-        if not line:
-            output.append(raw_line)
-            continue
-
-        remote = urljoin(playlist_url, line)
-        output.append(resource_url(local_base, remote))
-        segments.append(Segment(sequence, remote, segment_mode(remote), pending_discontinuity))
-        sequence += 1
-        pending_discontinuity = False
-
-    return RewrittenPlaylist("\n".join(output) + "\n", tuple(segments))
+    def stop(self) -> None:
+        if self._server is None:
+            return
+        self._server.shutdown()
+        self._server.server_close()
+        if self._thread is not None:
+            self._thread.join(timeout=3.0)
+        self._server = None
+        self._thread = None

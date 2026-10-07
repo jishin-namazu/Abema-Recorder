@@ -1,188 +1,198 @@
-"""N_m3u8DL-RE live capture through the local ABEMA HLS proxy."""
+"""Building and running the downloader command.
+
+The recording itself is N_m3u8DL-RE's job: it fetches the MPD, downloads the
+segments, hands each shard to the decryptor and muxes the result. This module
+constructs that invocation. The child shares the console (no pipes), so Ctrl+C
+reaches it directly and it runs its own drain-and-finalise path.
+
+Under ``--live-pipe-mux`` the downloader feeds named pipes to ffmpeg; setting
+``RE_LIVE_PIPE_OPTIONS`` adds ``-re`` to that ffmpeg invocation — paced output
+at playback rate. The flag applies only to a live (dynamic MPD) capture. With
+HLS serving configured for a live capture, the same ffmpeg process uses its
+tee muxer to keep the archive while maintaining a short rolling live playlist.
+"""
 
 from __future__ import annotations
 
-import json
 import os
-import shutil
-import signal
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
-from .proxy import HLSProxy
-from .timeline import TimelineMerger
+from .errors import CaptureError, ConfigError
+from .keys import KeyRing
+from .mpd import QUALITY_RESOLUTIONS
+from .toolchain import Toolchain
 
+LOG_NAME = "downloader.log"
 
+# Read by the downloader; its presence makes the muxing ffmpeg run with -re,
+# and its value is where that ffmpeg writes.
 PIPE_OPTIONS_ENV = "RE_LIVE_PIPE_OPTIONS"
 
+_UNSAFE_TEE_CHARACTERS = frozenset("\r\n\"'|")
 
-def executable(name: str) -> Path | None:
-    value = shutil.which(name)
-    return Path(value) if value else None
+
+def _tee_path(path: Path) -> str:
+    value = path.as_posix()
+    if any(character in _UNSAFE_TEE_CHARACTERS for character in value):
+        raise ConfigError(
+            "the output path contains a character ffmpeg's tee output cannot quote safely",
+            remedy="Choose an --out path without quotes, line breaks, or |.",
+        )
+    return value
 
 
 @dataclass(frozen=True, slots=True)
 class CapturePlan:
-    proxy_url: str
-    output_dir: Path
+    url: str
+    keys: KeyRing
+    out_dir: Path
     run_name: str
-    downloader: Path
-    ffmpeg: Path | None = None
-    ffprobe: Path | None = None
-    keep_segments: bool = True
-    paced_output: bool = True
-    quiet_downloader: bool = True
+    tools: Toolchain
+    live: bool = True
+    keep_shards: bool = True
+    quiet: bool = True
+    paced: bool = True
+    hls: bool = False
+    quality: str = ""
     record_limit: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.hls:
+            return
+        if not self.paced:
+            raise ConfigError(
+                "--hls cannot be combined with --burst-output",
+                remedy="Remove --burst-output so the playlist advances in real time.",
+            )
+        _tee_path(self.muxed_output)
+        _tee_path(self.hls_playlist)
 
     @property
     def muxed_output(self) -> Path:
-        return self.output_dir / f"{self.run_name}.ts"
+        """Where the muxed .ts lands.
+
+        Paced output requires handing ffmpeg an explicit destination.
+        """
+        return self.out_dir / f"{self.run_name}.ts"
 
     @property
-    def segment_dir(self) -> Path:
-        return self.output_dir.parent / self.run_name
+    def hls_directory(self) -> Path:
+        return self.out_dir / "hls"
 
-    def argv(self) -> list[str]:
-        args = [
-            str(self.downloader),
-            self.proxy_url,
-            "--live-keep-segments",
-            "True",
-            "--auto-select",
-            "--live-wait-time",
-            "2",
-            "--download-retry-count",
-            "10",
-            "--save-dir",
-            str(self.output_dir),
-            "--save-name",
-            self.run_name,
-            "--log-file-path",
-            str(self.output_dir / "downloader.log"),
-            "--disable-update-check",
-        ]
-        # Download and decryption stay independent from merging.  The recorder's
-        # TimelineMerger normalizes every completed segment before appending it.
-        args.append("--skip-merge")
-        if self.record_limit:
-            args += ["--live-record-limit", self.record_limit]
-        if self.quiet_downloader:
-            args += ["--log-level", "OFF"]
-        return args
+    @property
+    def hls_playlist(self) -> Path:
+        return self.hls_directory / "live.m3u8"
 
     def environment(self) -> dict[str, str]:
+        """The child's environment.
+
+        Setting the pipe options turns on ``-re``. The value is a plain path,
+        which the downloader treats as a destination; a value starting with
+        ``-`` is spliced in as raw ffmpeg arguments.
+        """
         env = dict(os.environ)
-        # Ignore stale values from versions which used --live-pipe-mux.
-        env.pop(PIPE_OPTIONS_ENV, None)
+        if self.live and self.paced:
+            env[PIPE_OPTIONS_ENV] = self.pipe_options
         return env
 
-    def display(self) -> str:
-        return subprocess.list2cmdline(self.argv())
-
-
-def default_run_name() -> str:
-    return f"abema_{datetime.now():%Y%m%d_%H%M%S}"
-
-
-def make_plan(
-    proxy_url: str,
-    output_dir: Path,
-    *,
-    keep_segments: bool,
-    paced_output: bool,
-    quiet_downloader: bool,
-    record_limit: str,
-) -> CapturePlan:
-    downloader = executable("N_m3u8DL-RE")
-    if downloader is None:
-        raise RuntimeError("N_m3u8DL-RE was not found on PATH")
-    ffmpeg = executable("ffmpeg")
-    if ffmpeg is None:
-        raise RuntimeError("ffmpeg was not found on PATH")
-    ffprobe = executable("ffprobe")
-    if ffprobe is None:
-        raise RuntimeError("ffprobe was not found on PATH")
-    run_name = output_dir.name.removesuffix(".out") or default_run_name()
-    return CapturePlan(
-        proxy_url,
-        output_dir,
-        run_name,
-        downloader,
-        ffmpeg=ffmpeg,
-        ffprobe=ffprobe,
-        keep_segments=keep_segments,
-        paced_output=paced_output,
-        quiet_downloader=quiet_downloader,
-        record_limit=record_limit,
-    )
-
-
-def run(
-    source_url: str,
-    quality: str,
-    host: str,
-    port: int,
-    output_dir: Path,
-    *,
-    keep_segments: bool,
-    paced_output: bool,
-    quiet_downloader: bool,
-    record_limit: str,
-    dry_run: bool = False,
-) -> int:
-    proxy_url = f"http://127.0.0.1:{port}/source.m3u8"
-    plan = make_plan(
-        proxy_url,
-        output_dir,
-        keep_segments=keep_segments,
-        paced_output=paced_output,
-        quiet_downloader=quiet_downloader,
-        record_limit=record_limit,
-    )
-    if dry_run:
-        print(plan.display())
-        return 0
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    with HLSProxy(source_url, quality, host, port, normalized_playback=True) as proxy:
-        record = {
-            "source_url": source_url,
-            "media_url": proxy.state.media_url,
-            "quality": quality,
-            "proxy_url": proxy.playlist_url,
-            "source_proxy_url": proxy.state.source_playlist_url,
-            "run_name": plan.run_name,
-            "started_at": datetime.now().isoformat(),
-            "segments_kept": keep_segments,
-            "paced_output": paced_output,
-            "command": plan.argv(),
-        }
-        (output_dir / "run.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
-        print(f"HLS for OBS: {proxy.playlist_url}")
-        print(f"recording:   {plan.muxed_output}")
-        assert plan.ffmpeg is not None and plan.ffprobe is not None
-        merger = TimelineMerger(
-            plan.muxed_output,
-            plan.ffmpeg,
-            plan.ffprobe,
-            plan.output_dir,
-            delete_sources=not plan.keep_segments,
-            playback=proxy.state.playback,
+    @property
+    def pipe_options(self) -> str:
+        """Destination passed to the downloader's live ffmpeg process."""
+        if not self.hls:
+            return str(self.muxed_output)
+        archive = f"[f=mpegts:onfail=abort]{_tee_path(self.muxed_output)}"
+        flags = "delete_segments+omit_endlist+independent_segments+temp_file"
+        live = (
+            "[f=hls:onfail=ignore:hls_time=2:hls_list_size=6:"
+            f"hls_delete_threshold=2:hls_allow_cache=0:hls_flags={flags}]"
+            f"{_tee_path(self.hls_playlist)}"
         )
-        process = subprocess.Popen(plan.argv(), env=plan.environment())
-        try:
-            return merger.follow(plan.segment_dir, process)
-        except KeyboardInterrupt:
-            if process.poll() is None:
-                process.send_signal(signal.SIGINT)
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    process.terminate()
-            return 130
-        except Exception:
-            if process.poll() is None:
-                process.terminate()
-            raise
+        return f'-f tee -shortest "{archive}|{live}"'
+
+    def argv(self) -> list[str]:
+        downloader = str(self.tools.downloader) if self.tools.downloader else "N_m3u8DL-RE"
+        argv = [downloader, self.url]
+
+        for key in self.keys:
+            argv += ["--key", str(key)]
+
+        if self.live:
+            argv += ["--live-pipe-mux"]
+            # The flag takes a capitalised boolean, not a lowercase one.
+            argv += ["--live-keep-segments", "True" if self.keep_shards else "False"]
+            if self.record_limit:
+                argv += ["--live-record-limit", self.record_limit]
+        elif self.keys and self.keep_shards:
+            # Static capture with shard keeping: the downloader only fetches.
+            # Each shard is decrypted tool-side as it lands and the final file
+            # is merged from the decrypted shards afterwards.
+            argv += ["--skip-merge"]
+            argv += ["--check-segments-count", "False"]
+
+        if self.quality:
+            resolution = QUALITY_RESOLUTIONS.get(self.quality)
+            if resolution is None:
+                raise ConfigError(
+                    f"unknown quality: {self.quality}",
+                    remedy="Use one of: " + ", ".join(QUALITY_RESOLUTIONS),
+                )
+            argv += ["-sv", f"res={resolution}"]
+        else:
+            argv += ["--auto-select"]
+        argv += ["--save-dir", str(self.out_dir)]
+        argv += ["--save-name", self.run_name]
+        argv += ["--decryption-engine", self.tools.decryptor_kind.value]
+
+        if self.tools.decryptor:
+            # shaka is published as packager-linux-x64; the downloader never
+            # looks for that name, so the path is passed explicitly.
+            argv += ["--decryption-binary-path", str(self.tools.decryptor)]
+
+        argv += ["--log-file-path", str(self.out_dir / LOG_NAME)]
+        if self.quiet:
+            # The downloader logs the manifest's PlayReady PSSH at ERROR level,
+            # repeating with every live manifest refresh. The log file still
+            # records everything.
+            argv += ["--log-level", "OFF"]
+        return argv
+
+    def display(self) -> str:
+        parts = []
+        for argument in self.argv():
+            if any(ch in argument for ch in ' "\\'):
+                parts.append('"' + argument.replace('"', '\\"') + '"')
+            else:
+                parts.append(argument)
+        shown = " ".join(parts)
+        if self.live and self.paced:
+            # Part of the command; a copied command line needs it to behave
+            # the same.
+            options = self.pipe_options.replace('"', '\\"')
+            shown = f'{PIPE_OPTIONS_ENV}="{options}" {shown}'
+        return shown
+
+
+def run(plan: CapturePlan) -> int:
+    """Run the downloader to completion. Returns its exit status."""
+    plan.tools.verify()
+    plan.out_dir.mkdir(parents=True, exist_ok=True)
+    if plan.hls:
+        plan.hls_directory.mkdir(parents=True, exist_ok=True)
+    try:
+        finished = subprocess.run(plan.argv(), env=plan.environment(), check=False)
+    except FileNotFoundError as exc:
+        raise CaptureError(
+            f"could not start the downloader: {exc}",
+            remedy="Rebuild the image — N_m3u8DL-RE should be on PATH.",
+        ) from exc
+    except KeyboardInterrupt:
+        return 130
+
+    if finished.returncode not in (0, 130):
+        raise CaptureError(
+            f"the downloader exited with status {finished.returncode}",
+            remedy=f"See {plan.out_dir / LOG_NAME} for what it reported.",
+        )
+    return finished.returncode

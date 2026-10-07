@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from abema_recorder.timeline import PlaybackBuffer, TimelineMerger
+from abema_recorder.live.timeline import PlaybackBuffer, TimelineMerger
 
 
 FFMPEG = shutil.which("ffmpeg")
@@ -131,9 +131,7 @@ def test_playback_prebuffers_and_paces_a_segment_burst():
         clock.advance(0.01)
         assert "/playback/103.ts" in playback.playlist("http://127.0.0.1:18081")
 
-        # A ten-segment burst is spread over 28 seconds instead of exposing the
-        # entire burst at once.  This reserve absorbs ABEMA's observed 20-25s ad
-        # publication pauses.
+        # A ten-segment burst is published at media-rate cadence.
         clock.advance(20.0)
         after_24_seconds = playback.playlist("http://127.0.0.1:18081")
         assert "/playback/108.ts" in after_24_seconds

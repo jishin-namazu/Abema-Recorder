@@ -1,13 +1,19 @@
+# Credentials must never enter the build context, let alone a layer.
+.abema
 .env
+device.wvd
+*.wvd
+headers.txt
+
 archive/
 recordings/
+
 .git/
+.gitignore
 .venv/
 venv/
 __pycache__/
 *.py[cod]
-*.egg-info/
 .pytest_cache/
 .mypy_cache/
 tests/
-stagecrowd_recorder/
